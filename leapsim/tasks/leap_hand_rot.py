@@ -109,7 +109,15 @@ class LeapHandRot(VecTaskRot):
         else:
             assert self.save_init_pose
 
-        self.rot_axis_buf = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
+        # rotation axis
+        if 'rotationAxis' not in self.cfg['env']:
+            print("Use default rotation axis [0, 0, -1]!")
+            self.enbale_default_rotation_axis = True
+            self.rot_axis_buf = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
+        else:
+            print("Use custom rotation axis {}!".format(self.cfg['env']['rotationAxis']))
+            self.enbale_default_rotation_axis = False
+            self.rot_axis_buf = torch.tensor(self.cfg['env']['rotationAxis'], device=self.device, dtype=torch.float).repeat(self.num_envs, 1)
 
         # useful buffers
         self.init_pose_buf = torch.zeros((self.num_envs, self.num_dofs), device=self.device, dtype=torch.float)
@@ -507,7 +515,6 @@ class LeapHandRot(VecTaskRot):
             else:
                 sampled_pose_idx = np.random.randint(self.saved_grasping_states[scale_key].shape[0], size=len(s_ids))
             
-            import pdb; pdb.set_trace()
             sampled_pose = self.saved_grasping_states[scale_key][sampled_pose_idx].clone()
             self.root_state_tensor[self.object_indices[s_ids], :7] = sampled_pose[:, 16:]
             self.root_state_tensor[self.object_indices[s_ids], 7:13] = 0
@@ -666,7 +673,8 @@ class LeapHandRot(VecTaskRot):
             self.obs_buf = self.obs_buf * torch.tensor(self.cfg["env"]["obs_mask"], device=self.device)[None, :]
 
     def compute_reward(self, actions):
-        self.rot_axis_buf[:, -1] = -1
+        if self.enbale_default_rotation_axis:
+            self.rot_axis_buf[:, -1] = -1
         # pose diff penalty
         pose_diff_penalty = ((self.leap_hand_dof_pos - self.init_pose_buf) ** 2).sum(-1)
         # work and torque penalty
@@ -684,6 +692,7 @@ class LeapHandRot(VecTaskRot):
             pose_diff_penalty, pose_diff_pscale,
             torque_penalty, torque_pscale,
             work_penalty, work_pscale,
+            use_reward_conf=self.enbale_default_rotation_axis
         )
 
         if "additional_rewards" in self.cfg["env"]:
@@ -874,6 +883,7 @@ class LeapHandRot(VecTaskRot):
         self.object_angvel = self.root_state_tensor[self.object_indices, 10:13]
 
         if self.prev_global_counter != self.global_counter: # This is required since sometimes _refresh_gym is called multiple times within same step
+            # TODO(yongpeng): make sure the anular velocity computation here avoids singularity problem
             new_object_roll, new_object_pitch, new_object_yaw = euler_from_quaternion(self.object_rot)
             new_object_rpy = torch.stack((new_object_roll, new_object_pitch, new_object_yaw), dim=1) 
             delta_counter = self.global_counter - self.prev_global_counter
@@ -1057,7 +1067,9 @@ class LeapHandRot(VecTaskRot):
         min_angvel = self.cfg["env"]["reward"]["angvelClipMin"]
         max_angvel = self.cfg["env"]["reward"]["angvelClipMax"]
 
-        reward = torch.clip(self.object_angvel_finite_diff[:, 2], min=min_angvel, max=max_angvel)
+        # reward = torch.clip(self.object_angvel_finite_diff[:, 2], min=min_angvel, max=max_angvel)
+        rot_dot = (self.object_angvel_finite_diff * self.rot_axis_buf).sum(-1)
+        reward = torch.clip(rot_dot, min=min_angvel, max=max_angvel)
 
         N = self.progress_buf  
         self.object_angvel_finite_diff_mean = N * self.object_angvel_finite_diff_mean / (N  + 1) + reward / (N + 1) 
@@ -1093,8 +1105,12 @@ def compute_hand_reward(
     pose_diff_penalty, pose_diff_penalty_scale: float,
     torque_penalty, torque_pscale: float,
     work_penalty, work_pscale: float,
+    use_reward_conf=True
 ):
-    rotate_reward_cond = (rotation_axis[:, -1] != 0).float()
+    if use_reward_conf:
+        rotate_reward_cond = (rotation_axis[:, -1] != 0).float()
+    else:
+        rotate_reward_cond = torch.ones(rotation_axis.shape[0], device=rotation_axis.device).float()
     vec_dot = (object_angvel * rotation_axis).sum(-1)
     rotate_reward = torch.clip(vec_dot, max=angvel_clip_max, min=angvel_clip_min)
     rotate_reward = rotate_reward_scale * rotate_reward * rotate_reward_cond

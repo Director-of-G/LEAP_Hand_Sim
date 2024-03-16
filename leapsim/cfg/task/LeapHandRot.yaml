@@ -19,11 +19,15 @@ env:
   # environment basic
   # numEnvs: ${resolve_default:16384,${...num_envs}}
   numEnvs: ${resolve_default:2048,${...num_envs}}
-  numObservations: 102
+  # numObservations: 102
+  numObservations: 120
   numActions: 16
   envSpacing: 0.25
   phase_period: 2
   exec_lag: 1
+
+  # observation control
+  include_obj_pose: True
 
   episodeLength: 400
   enableDebugVis: False
@@ -48,6 +52,9 @@ env:
   randomForceProbScalar: 0.25
   forceDecay: 0.9
   forceDecayInterval: 0.08
+
+  # Set rotation axis (+z by default)
+  rotationAxis: [0, 1, 0]
 
   reward:
     angvelClipMin: -0.25
