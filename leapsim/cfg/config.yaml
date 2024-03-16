@@ -47,8 +47,8 @@ creds_path: "~/creds.json"
 
 wandb_activate: True
 wandb_group: ''
-wandb_entity: "wandb_username"
-wandb_project: 'leap_sim'
+wandb_entity: "jyp23"
+wandb_project: 'leap_rl'
 capture_video: False
 capture_video_freq: 183
 capture_video_len: 100

@@ -16,6 +16,9 @@ import random
 import os
 import git
 
+import shlex
+import subprocess
+
 def get_current_commit_hash():
     repo = git.Repo(search_parent_directories=True)
     sha = repo.head.object.hexsha
@@ -63,5 +66,20 @@ def set_seed(seed, torch_deterministic=False, rank=0):
         torch.backends.cudnn.deterministic = False
 
     return seed
+
+def git_hash():
+    cmd = 'git log -n 1 --pretty="%h"'
+    ret = subprocess.check_output(shlex.split(cmd)).strip()
+    if isinstance(ret, bytes):
+        ret = ret.decode()
+    return ret
+
+
+def git_diff_config(name):
+    cmd = f'git diff --unified=0 {name}'
+    ret = subprocess.check_output(shlex.split(cmd)).strip()
+    if isinstance(ret, bytes):
+        ret = ret.decode()
+    return ret
 
 # EOF

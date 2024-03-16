@@ -507,6 +507,7 @@ class LeapHandRot(VecTaskRot):
             else:
                 sampled_pose_idx = np.random.randint(self.saved_grasping_states[scale_key].shape[0], size=len(s_ids))
             
+            import pdb; pdb.set_trace()
             sampled_pose = self.saved_grasping_states[scale_key][sampled_pose_idx].clone()
             self.root_state_tensor[self.object_indices[s_ids], :7] = sampled_pose[:, 16:]
             self.root_state_tensor[self.object_indices[s_ids], 7:13] = 0
