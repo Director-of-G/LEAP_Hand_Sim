@@ -53,8 +53,12 @@ env:
   forceDecay: 0.9
   forceDecayInterval: 0.08
 
-  # Set rotation axis (+z by default)
-  rotationAxis: [0, 1, 0]
+  # Set target motion by ...
+  # ... rotation axis (+z by default)
+  desired_motion:
+    rotationAxis: [0, 1, 0]
+    targetEulerAngle: [0, 1.5708, 0]
+    orientErrorEpsilon: 0.4
 
   reward:
     angvelClipMin: -0.25
@@ -67,7 +71,8 @@ env:
 
   additional_rewards:
     rotate_finite_diff: 1.25
-    object_fallen: -10 
+    object_fallen: -10
+    orientation_error: 1.0
 
   override_object_init_z: 0.57
   override_object_init_x: -0.03 

@@ -10,8 +10,9 @@
 
 import torch
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 from isaacgym import gymtorch
-from isaacgym.torch_utils import torch_rand_float, quat_from_angle_axis, quat_mul, tensor_clamp, to_torch
+from isaacgym.torch_utils import torch_rand_float, quat_from_angle_axis, quat_from_euler_xyz, quat_mul, tensor_clamp, to_torch
 from leapsim.tasks.leap_hand_rot import LeapHandRot
 
 
@@ -41,6 +42,11 @@ class LeapHandGrasp(LeapHandRot):
             
         if "grasp_cache_len" not in self.cfg["env"]:
             self.cfg["env"]["grasp_cache_len"] = 5e4
+
+        self.random_reset_method = self.cfg['env']['randomMethod']
+        assert self.random_reset_method in ['euler_angle', 'rotation_axis']
+
+        self.fix_reset_quat = self.cfg['env']['fix_reset_quat']
         
         self.x_unit_tensor = to_torch([1, 0, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.y_unit_tensor = to_torch([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
@@ -73,6 +79,9 @@ class LeapHandGrasp(LeapHandRot):
         # generate random values
         rand_floats = torch_rand_float(-1.0, 1.0, (len(env_ids), self.num_leap_hand_dofs * 2 + 5), device=self.device)
 
+        # generate random euler angle
+        rand_rpy = torch.tensor(R.random(len(env_ids)).as_euler('xyz', degrees=False), dtype=torch.float, device=self.device)
+
         # reset rigid body forces
         self.rb_forces[env_ids, :, :] = 0.0
         success = self.progress_buf[env_ids] == self.max_episode_length
@@ -90,9 +99,16 @@ class LeapHandGrasp(LeapHandRot):
         self.root_state_tensor[self.object_indices[env_ids]] = self.object_init_state[env_ids].clone()
         self.root_state_tensor[self.object_indices[env_ids], 0:2] = self.object_init_state[env_ids, 0:2]
         self.root_state_tensor[self.object_indices[env_ids], self.up_axis_idx] = self.object_init_state[env_ids, self.up_axis_idx]
-        new_object_rot = randomize_rotation(rand_floats[:, 3], rand_floats[:, 4], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
-        new_object_rot[:] = 0
-        new_object_rot[:, -1] = 1
+
+        if self.random_reset_method == 'rotation_axis':
+            new_object_rot = randomize_rotation(rand_floats[:, 3], rand_floats[:, 4], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
+        elif self.random_reset_method == "euler_angle":
+            new_object_rot = randomize_rotation_from_euler(rand_rpy[:, 0], rand_rpy[:, 1], rand_rpy[:, 2])
+
+        if self.fix_reset_quat:
+            new_object_rot[:] = 0
+            new_object_rot[:, -1] = 1
+            
         self.root_state_tensor[self.object_indices[env_ids], 3:7] = new_object_rot
         self.root_state_tensor[self.object_indices[env_ids], 7:13] = torch.zeros_like(
             self.root_state_tensor[self.object_indices[env_ids], 7:13])
@@ -156,3 +172,7 @@ class LeapHandGrasp(LeapHandRot):
 @torch.jit.script
 def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
     return quat_mul(quat_from_angle_axis(rand0 * np.pi, x_unit_tensor), quat_from_angle_axis(rand1 * np.pi, y_unit_tensor))
+
+@torch.jit.script
+def randomize_rotation_from_euler(roll_tensor, pitch_tensor, yaw_tensor):
+    return quat_from_euler_xyz(roll_tensor, pitch_tensor, yaw_tensor)

@@ -24,6 +24,9 @@ env:
 
   disable_actions: True
 
+  randomMethod: "euler_angle"     # "euler_angle" or "rotation_axis"
+  fix_reset_quat: True            # fix reset object quaternion as [0, 0, 0, 1]
+
   randomization:
     randomizeMass: True
     randomizeMassLower: 0.05

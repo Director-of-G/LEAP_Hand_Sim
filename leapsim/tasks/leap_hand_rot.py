@@ -17,6 +17,7 @@ import numpy as np
 from isaacgym import gymtorch
 from isaacgym import gymapi, gymutil
 from isaacgym.torch_utils import quat_conjugate, quat_mul, quat_rotate, to_torch, unscale, quat_apply, tensor_clamp, torch_rand_float, scale
+from leap_hand.torch_utils import quat_diff_rad
 from glob import glob
 import math
 import torchvision
@@ -110,14 +111,23 @@ class LeapHandRot(VecTaskRot):
             assert self.save_init_pose
 
         # rotation axis
-        if 'rotationAxis' not in self.cfg['env']:
+        if 'rotationAxis' not in self.cfg['env']['desired_motion']:
             print("Use default rotation axis [0, 0, -1]!")
             self.enbale_default_rotation_axis = True
             self.rot_axis_buf = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
         else:
-            print("Use custom rotation axis {}!".format(self.cfg['env']['rotationAxis']))
+            print("Use custom rotation axis {}!".format(self.cfg['env']['rotationAxis']['desired_motion']))
             self.enbale_default_rotation_axis = False
-            self.rot_axis_buf = torch.tensor(self.cfg['env']['rotationAxis'], device=self.device, dtype=torch.float).repeat(self.num_envs, 1)
+            self.rot_axis_buf = torch.tensor(self.cfg['env']['rotationAxis']['desired_motion'], device=self.device, dtype=torch.float).repeat(self.num_envs, 1)
+
+        # desired rpy
+        if 'targetEulerAngle' in self.cfg['env']['desired_motion']:
+            self.target_rpy = torch.tensor(self.cfg['env']['desired_motion']['targetEulerAngle'], device=self.device, dtype=torch.float).repeat(self.num_envs, 1)
+        else:
+            self.target_rpy = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
+        qw, qx, qy, qz = quaternion_from_euler(self.target_rpy[:, 0], self.target_rpy[:, 1], self.target_rpy[:, 2])
+        self.target_quat = torch.stack([qx, qy, qz, qw], dim=-1)
+        self.reward_orient_error_epsilon = self.cfg['env']['reward']['orientErrorEpsilon']
 
         # useful buffers
         self.init_pose_buf = torch.zeros((self.num_envs, self.num_dofs), device=self.device, dtype=torch.float)
@@ -1079,6 +1089,10 @@ class LeapHandRot(VecTaskRot):
     def reward_object_fallen(self):
         return torch.less(self.object_pos[:, -1], self.reset_z_threshold).float()
 
+    def reward_orientation_error(self):
+        error_rad_abs = quat_diff_rad(self.object_rot, self.target_object_rot).abs()
+        return 1 / (error_rad_abs + self.reward_orient_error_epsilon)
+
     def LEAPsim_limits(self):
         sim_min = self.sim_to_real(self.leap_hand_dof_lower_limits).squeeze().cpu().numpy()
         sim_max = self.sim_to_real(self.leap_hand_dof_upper_limits).squeeze().cpu().numpy()
@@ -1145,6 +1159,23 @@ def euler_from_quaternion(quat_angle):
     yaw_z = torch.atan2(t3, t4)
     
     return roll_x, pitch_y, yaw_z # in radians
+
+def quaternion_from_euler(euler_angle):
+    """
+        This is the reverse operation of euler_from_quaternion
+        (reference: https://blog.csdn.net/xiaoma_bk/article/details/79082629)
+    """
+    roll = euler_angle[:,0]; pitch = euler_angle[:,1]; yaw = euler_angle[:,2]
+    cy = torch.cos(yaw * 0.5); sy = torch.sin(yaw * 0.5)
+    cp = torch.cos(pitch * 0.5); sp = torch.sin(pitch * 0.5)
+    cr = torch.cos(roll * 0.5); sr = torch.sin(roll * 0.5)
+
+    quat_w = cy * cp * cr + sy * sp * sr
+    quat_x = cy * cp * sr - sy * sp * cr
+    quat_y = sy * cp * sr + cy * sp * cr
+    quat_z = sy * cp * cr - cy * sp * sr
+
+    return quat_w, quat_x, quat_y, quat_z
 
 def unscale_np(x, lower, upper):
     return (2.0 * x - upper - lower)/(upper - lower)

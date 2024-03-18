@@ -2,6 +2,7 @@
 *.png
 **/__pycache__/ 
 leapsim/wandb
+leapsim/runs
 leapsim.egg-info
 isaacgym/
 .vscode
