@@ -24,6 +24,7 @@ class LeapHandGrasp(LeapHandRot):
 
         if "canonical_pose" in cfg["env"]:
             self.canonical_pose = cfg["env"]["canonical_pose"]
+            print("use custom canonical pose: ", self.canonical_pose)
         else:
             self.canonical_pose = [
                 0.082, 1.244, 0.265, 0.298, 1.104, 1.163, 0.953, -0.138,

@@ -950,7 +950,8 @@ class LeapHandRot(VecTaskRot):
         self.object_type_list = []
         self.asset_files_dict = {
             'simple_tennis_ball': 'assets/ball.urdf',
-            'cube': 'assets/cube.urdf'
+            'cube': 'assets/cube.urdf',
+            'cube_small': 'assets/cube_50mm.urdf'
         }
         for p_id, prim in enumerate(primitive_list):
             if 'cuboid' in prim:
