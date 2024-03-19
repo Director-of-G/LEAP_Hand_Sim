@@ -72,7 +72,7 @@ env:
   additional_rewards:
     rotate_finite_diff: 1.25
     object_fallen: -10
-    orientation_error: 1.0
+    # orientation_error: 1.0
 
   override_object_init_z: 0.57
   override_object_init_x: -0.03 

@@ -1,4 +1,4 @@
-import os
+import os, sys
 from os.path import join, dirname, abspath
 import time
 from matplotlib import pyplot as plt
@@ -11,6 +11,7 @@ from pinocchio.visualize import MeshcatVisualizer
 # parameters
 BOX_SIZE = '0.10'
 NUM_DISPLAYS = 30
+CACHE_PREFIX = "random_rpy_cache"
 
 # This path refers to Pinocchio source code but you can define your own directory here.
 pinocchio_model_dir = join(dirname(dirname(dirname(str(abspath(__file__))))), "assets/leap_hand")
@@ -48,7 +49,7 @@ viz.loadViewerModel()
 
 # load joint data
 cache_dir = join(dirname(dirname(str(abspath(__file__)))), "cache")
-cache_file_name = "leap_hand_in_palm_cube_grasp_50k_s{}.npy".format(''.join(str(BOX_SIZE).split('.')[1:]))
+cache_file_name = "{0}_grasp_50k_s{1}.npy".format(CACHE_PREFIX, ''.join(str(BOX_SIZE).split('.')[1:]))
 cached_joint_pos_data = np.load(os.path.join(cache_dir, cache_file_name))
 
 # euler_angle_distribution
