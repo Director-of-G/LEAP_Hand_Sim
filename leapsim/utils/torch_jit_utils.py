@@ -13,6 +13,11 @@
 import torch
 import numpy as np
 from isaacgym.torch_utils import *
+from leapsim.utils.utils import module_available
+
+PYTORCH3D_AVAILABLE = module_available('pytorch3d')
+if PYTORCH3D_AVAILABLE:
+    import pytorch3d.transforms.rotation_conversions as py3d_rot_cvt
 
 
 @torch.jit.script
@@ -351,6 +356,42 @@ def calc_heading_quat_inv(q):
 
     heading_q = quat_from_angle_axis(-heading, axis)
     return heading_q
+
+@torch.no_grad()
+def random_quaternions(num, dtype=None, device=None, order='xyzw'):
+    """
+    return quaternions in [w, x, y, z] or [x, y, z, w]
+    """
+    if PYTORCH3D_AVAILABLE:
+        quats = py3d_rot_cvt.random_quaternions(num, dtype=dtype, device=device)
+    else:
+        """
+        http://planning.cs.uiuc.edu/node198.html
+        """
+        ran = torch.rand(num, 3, dtype=dtype, device=device)
+        r1, r2, r3 = ran[:, 0], ran[:, 1], ran[:, 2]
+        pi2 = 2 * np.pi
+        r1_1 = torch.sqrt(1.0 - r1)
+        r1_2 = torch.sqrt(r1)
+        t1 = pi2 * r2
+        t2 = pi2 * r3
+
+        quats = torch.zeros(num, 4, dtype=dtype, device=device)
+        quats[:, 0] = r1_1 * (torch.sin(t1))
+        quats[:, 1] = r1_1 * (torch.cos(t1))
+        quats[:, 2] = r1_2 * (torch.sin(t2))
+        quats[:, 3] = r1_2 * (torch.cos(t2))
+
+    assert order in ['xyzw', 'wxyz']
+    if order == 'xyzw':
+        quats = quat_wxyz_to_xyzw(quats)
+    return quats
+
+@torch.no_grad()
+def quat_wxyz_to_xyzw(quat_wxyz):
+    quat_xyzw = torch.index_select(quat_wxyz, -1,
+                                   torch.LongTensor([1, 2, 3, 0]).to(quat_wxyz.device))
+    return quat_xyzw
 
 
 # EOF

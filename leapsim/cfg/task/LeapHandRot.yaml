@@ -26,6 +26,12 @@ env:
   phase_period: 2
   exec_lag: 1
 
+  # observation type
+  observation_type: "full_state"  # "proprioception" or "full_state"
+
+  # history
+  include_history: True
+
   # observation control
   include_obj_pose: True
 
@@ -53,12 +59,16 @@ env:
   forceDecay: 0.9
   forceDecayInterval: 0.08
 
+  # thresholds
+  successTolerance: 0.4
+
   # Set target motion by ...
   # ... rotation axis (+z by default)
   desired_motion:
     # rotationAxis: [0, 1, 0]
     targetEulerAngle: [0, 1.5708, 0]
     orientErrorEpsilon: 0.4
+    targetQuatFile: "reset_target_quat"
 
   reward:
     angvelClipMin: -0.25
@@ -69,10 +79,21 @@ env:
     torquePenaltyScale: -0.1
     workPenaltyScale: -1.0
 
+  goalReward:
+    dof_vel_thresh: 0.25
+    obj_lin_vel_thresh: 0.04
+    obj_ang_vel_thresh: 0.5
+    action_norm_thresh: 1.0
+    reachGoalBonus: 800
+    rotRewardScale: 1.0
+    rotEps: 0.1
+
   additional_rewards:
-    rotate_finite_diff: 1.25
+    # rotate_finite_diff: 1.25
     object_fallen: -10
     # orientation_error: 1.0
+    # TODO(yongpeng): assign the following scales
+    fingertip_distance: -1    # ftipRewardScale
 
   override_object_init_z: 0.57
   override_object_init_x: -0.03 

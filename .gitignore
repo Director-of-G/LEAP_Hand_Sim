@@ -3,6 +3,7 @@
 **/__pycache__/ 
 leapsim/wandb
 leapsim/runs
+leapsim/test
 leapsim.egg-info
 isaacgym/
 .vscode

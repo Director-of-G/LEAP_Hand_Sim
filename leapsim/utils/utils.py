@@ -19,6 +19,30 @@ import git
 import shlex
 import subprocess
 
+import importlib
+
+def module_available(module_path: str) -> bool:
+    """Testing if given module is avalaible in your env.
+
+    Copied from https://github.com/PyTorchLightning/pytorch-lightning/blob/master/pytorch_lightning/utilities/__init__.py.
+
+    >>> module_available('os')
+    True
+    >>> module_available('bla.bla')
+    False
+    """
+    try:
+        mods = module_path.split('.')
+        assert mods, 'nothing given to test'
+        # it has to be tested as per partets
+        for i in range(len(mods)):
+            module_path = '.'.join(mods[:i + 1])
+            if importlib.util.find_spec(module_path) is None:
+                return False
+        return True
+    except AttributeError:
+        return False
+
 def get_current_commit_hash():
     repo = git.Repo(search_parent_directories=True)
     sha = repo.head.object.hexsha

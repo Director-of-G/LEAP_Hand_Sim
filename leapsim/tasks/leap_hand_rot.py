@@ -17,7 +17,7 @@ import numpy as np
 from isaacgym import gymtorch
 from isaacgym import gymapi, gymutil
 from isaacgym.torch_utils import quat_conjugate, quat_mul, quat_rotate, to_torch, unscale, quat_apply, tensor_clamp, torch_rand_float, scale
-from leapsim.utils.torch_jit_utils import quat_diff_rad
+from leapsim.utils.torch_jit_utils import quat_diff_rad, random_quaternions
 from glob import glob
 import math
 import torchvision
@@ -46,6 +46,20 @@ class LeapHandRot(VecTaskRot):
         self.reset_z_threshold = self.cfg['env']['reset_height_threshold']
         self.grasp_cache_name = self.cfg['env']['grasp_cache_name']
         self.evaluate = self.cfg['on_evaluation']
+
+        # goal config
+        self.enbale_goal_based_reward = ('goalReward' in self.cfg['env'])
+
+        # observation type
+        self.obs_type = self.cfg['env']['observation_type']
+        self.vel_obs_scale = 0.2 # scale factor of velocity based observations
+
+        ## TODO: change value here
+        self.num_obs_dict = {
+            "proprioception": 120,
+            "full_state": 121
+        }
+        self.cfg["env"]["numObservations"] = self.num_obs_dict[self.obs_type]
 
         super().__init__(cfg, rl_device, sim_device, graphics_device_id, headless)
 
@@ -92,6 +106,7 @@ class LeapHandRot(VecTaskRot):
 
         self.prev_targets = torch.zeros((self.num_envs, self.num_dofs), dtype=torch.float, device=self.device)
         self.cur_targets = torch.zeros((self.num_envs, self.num_dofs), dtype=torch.float, device=self.device)
+        
         # object apply random forces parameters
         self.force_scale = self.cfg['env'].get('forceScale', 0.0)
         self.random_force_prob_scalar = self.cfg['env'].get('randomForceProbScalar', 0.0)
@@ -120,18 +135,42 @@ class LeapHandRot(VecTaskRot):
             self.enbale_default_rotation_axis = False
             self.rot_axis_buf = torch.tensor(self.cfg['env']['desired_motion']['rotationAxis'], device=self.device, dtype=torch.float).repeat(self.num_envs, 1)
 
-        # desired rpy
-        if 'targetEulerAngle' in self.cfg['env']['desired_motion']:
-            self.target_rpy = torch.tensor(self.cfg['env']['desired_motion']['targetEulerAngle'], device=self.device, dtype=torch.float).repeat(self.num_envs, 1)
+        # # desired rpy
+        # if 'targetEulerAngle' in self.cfg['env']['desired_motion']:
+        #     self.target_rpy = torch.tensor(self.cfg['env']['desired_motion']['targetEulerAngle'], device=self.device, dtype=torch.float).repeat(self.num_envs, 1)
+        # else:
+        #     self.target_rpy = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
+        # qw, qx, qy, qz = quaternion_from_euler(self.target_rpy)
+        # self.target_quat = torch.stack([qx, qy, qz, qw], dim=-1)
+        # self.reward_orient_error_epsilon = self.cfg['env']['desired_motion']['orientErrorEpsilon']
+
+        # desired orientation
+        if 'targetQuatFile' in self.cfg['env']['desired_motion']:
+            self.use_random_target_quat = False
+            target_quat_cache_name = self.cfg['env']['desired_motion']['targetQuatFile']
+            self.target_quat_cache = torch.from_numpy(np.load(
+                    f'cache/{target_quat_cache_name}.npy'
+                )).float().to(self.device)
+            print("Will use the goal quaternions in {}.npy!".format(target_quat_cache_name))
         else:
-            self.target_rpy = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
-        qw, qx, qy, qz = quaternion_from_euler(self.target_rpy)
-        self.target_quat = torch.stack([qx, qy, qz, qw], dim=-1)
-        self.reward_orient_error_epsilon = self.cfg['env']['desired_motion']['orientErrorEpsilon']
+            self.use_random_target_quat = True
+            print("Will use random goal quaternions!")
+
+        if self.enbale_goal_based_reward:
+            self.goal_based_reward_cfg = self.cfg['env']['goalReward']
+            self.success_tolerance = self.cfg['env']['successTolerance']
+        else:
+            assert ('rotate_finite_diff' in self.cfg['env']['additional_rewards']) or \
+                (self.cfg['env']['reward']['rotateRewardScale'] != 0.0)
 
         # useful buffers
         self.init_pose_buf = torch.zeros((self.num_envs, self.num_dofs), device=self.device, dtype=torch.float)
         self.object_init_pose_buf = torch.zeros((self.num_envs, 7), device=self.device, dtype=torch.float)
+        if self.enbale_goal_based_reward:
+            self.reset_goal_buf = self.reset_buf.clone()
+        self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
+
         self.previous_object_rot = torch.zeros((self.num_envs, 4), device=self.device)
         self.actions = torch.zeros((self.num_envs, self.num_actions), device=self.device, dtype=torch.float)
         self.last_torques = self.torques.clone()
@@ -139,7 +178,7 @@ class LeapHandRot(VecTaskRot):
         assert type(self.p_gain) in [int, float] and type(self.d_gain) in [int, float], 'assume p_gain and d_gain are only scalars'
         self.p_gain = torch.ones((self.num_envs, self.num_actions), device=self.device, dtype=torch.float) * self.p_gain
         self.d_gain = torch.ones((self.num_envs, self.num_actions), device=self.device, dtype=torch.float) * self.d_gain
-        self.resample_randomizations(None) 
+        self.resample_randomizations(None)
 
         # debug and understanding statistics
         self.env_timeout_counter = to_torch(np.zeros((len(self.envs)))).long().to(self.device)  # max 10 (10000 envs)
@@ -172,6 +211,8 @@ class LeapHandRot(VecTaskRot):
             if "actions_file" in self.cfg["env"]["debug"]:
                 self.actions_list = torch.from_numpy(np.load(self.cfg["env"]["debug"]["actions_file"])).cuda()        
                 self.record_duration = self.actions_list.shape[0]
+
+        print("Finished initializing simulation envs!")
     
     def set_camera(self, position, lookat):
         """ 
@@ -351,6 +392,13 @@ class LeapHandRot(VecTaskRot):
             ( 73 ,  3 )
         ]
 
+    def _get_leap_asset(self, asset_root=None, asset_options=None):
+        rb_links = self.gym.get_asset_rigid_body_names(self.hand_asset)
+        self.fingertips = [x for x in rb_links if 'fingertip' in x]  # ["fingertip", "fingertip_2", "fingertip_3", "thumb_fingertip"]
+        self.num_fingertips = len(self.fingertips)
+
+        print(f'Number of fingertips:{self.num_fingertips}  Fingertips:{self.fingertips}')
+
     def _create_envs(self, num_envs, spacing, num_per_row):
         self._create_ground_plane()
         lower = gymapi.Vec3(-spacing, -spacing, 0.0)
@@ -384,6 +432,9 @@ class LeapHandRot(VecTaskRot):
 
         hand_pose, obj_pose = self._init_object_pose()
 
+        if self.enbale_goal_based_reward:
+            goal_start_pose = self.get_goal_object_start_pose(object_start_pose=obj_pose)
+
         # compute aggregate size
         self.num_leap_hand_bodies = self.gym.get_asset_rigid_body_count(self.hand_asset)
         self.num_leap_hand_shapes = self.gym.get_asset_rigid_shape_count(self.hand_asset)
@@ -396,6 +447,11 @@ class LeapHandRot(VecTaskRot):
 
         self.hand_indices = []
         self.object_indices = []
+        self.goal_object_indices = []
+
+        # get fingertip handles
+        self.fingertip_handles = [self.gym.find_asset_rigid_body_index(self.hand_asset, name) for name in
+                                  self.fingertips]
 
         leap_hand_rb_count = self.gym.get_asset_rigid_body_count(self.hand_asset)
         object_rb_count = 1
@@ -471,6 +527,14 @@ class LeapHandRot(VecTaskRot):
                 obj_friction = rand_friction
             self.object_friction_buf[i] = obj_friction
 
+            # create goal object
+            if self.enbale_goal_based_reward:
+                goal_asset = self.goal_asset_list[object_type_id]
+                goal_handle = self.gym.create_actor(env_ptr, goal_asset, goal_start_pose, "goal_object", i + self.num_envs,
+                                                    0, 2)
+                goal_object_idx = self.gym.get_actor_index(env_ptr, goal_handle, gymapi.DOMAIN_SIM)
+                self.goal_object_indices.append(goal_object_idx)
+
             if self.aggregate_mode > 0:
                 self.gym.end_aggregate(env_ptr)
 
@@ -479,10 +543,61 @@ class LeapHandRot(VecTaskRot):
         self.obj_scales = torch.tensor(self.obj_scales, device=self.device)
         self.object_init_state = to_torch(self.object_init_state, device=self.device, dtype=torch.float).view(self.num_envs, 13)
         self.object_rb_handles = to_torch(self.object_rb_handles, dtype=torch.long, device=self.device)
+        self.fingertip_handles = to_torch(self.fingertip_handles, dtype=torch.long, device=self.device)
         self.hand_indices = to_torch(self.hand_indices, dtype=torch.long, device=self.device)
         self.object_indices = to_torch(self.object_indices, dtype=torch.long, device=self.device)
     
-    def reset_idx(self, env_ids):
+        self.setup_torch_states()
+
+        print("Finished setting up simulation envs!")
+
+    def setup_torch_states(self):
+        self.object_init_state = to_torch(self.object_init_state, device=self.device, dtype=torch.float).view(
+            self.num_envs, 13)
+        self.goal_states = self.object_init_state.clone()
+        # TODO(yongpeng): check if we need any goal bias here
+        # self.goal_states[:, self.up_axis_idx] -= 0.04
+        self.goal_init_state = self.goal_states.clone()
+
+        if self.enbale_goal_based_reward:
+            self.goal_object_indices = to_torch(self.goal_object_indices, dtype=torch.long, device=self.device)
+
+    def get_goal_object_start_pose(self, object_start_pose):
+        self.goal_displacement = gymapi.Vec3(0., 0, 0.25)
+        self.goal_displacement_tensor = to_torch(
+            [self.goal_displacement.x, self.goal_displacement.y, self.goal_displacement.z], device=self.device)
+        goal_start_pose = gymapi.Transform()
+        goal_start_pose.p = object_start_pose.p + self.goal_displacement
+        return goal_start_pose
+
+    def reset_target_pose(self, env_ids, apply_reset=False):
+        """
+            generate new target pose for env_ids
+        """
+        if self.use_random_target_quat:
+            new_rot = random_quaternions(num=len(env_ids), device=self.device, order='xyzw')
+        else:
+            sampled_quat_idx = np.random.randint(self.target_quat_cache.shape[0], size=len(env_ids))
+            new_rot = self.target_quat_cache[sampled_quat_idx].clone()
+
+        self.goal_states[env_ids, 0:3] = self.goal_init_state[env_ids, 0:3]
+        self.goal_states[env_ids, 3:7] = new_rot
+        
+        # apply the changes to goal object here
+        self.root_state_tensor[self.goal_object_indices[env_ids], 0:3] = self.goal_states[env_ids, 0:3] + self.goal_displacement_tensor
+        self.root_state_tensor[self.goal_object_indices[env_ids], 3:7] = self.goal_states[env_ids, 3:7]
+        self.root_state_tensor[self.goal_object_indices[env_ids], 7:13] = torch.zeros_like(
+            self.root_state_tensor[self.goal_object_indices[env_ids], 7:13])
+
+        if apply_reset:
+            goal_object_indices = self.goal_object_indices[env_ids].to(torch.int32)
+            self.gym.set_actor_root_state_tensor_indexed(self.sim,
+                                                         gymtorch.unwrap_tensor(self.root_state_tensor),
+                                                         gymtorch.unwrap_tensor(goal_object_indices), len(env_ids))
+
+        self.reset_goal_buf[env_ids] = 0
+
+    def reset_idx(self, env_ids, goal_env_ids=None):
         if self.randomize_mass:
             lower, upper = self.randomize_mass_lower, self.randomize_mass_upper
 
@@ -508,6 +623,9 @@ class LeapHandRot(VecTaskRot):
                 device=self.device).squeeze(1)
 
         self.resample_randomizations(env_ids)
+
+        if self.enbale_goal_based_reward:
+            self.reset_target_pose(env_ids)
 
         # reset rigid body forces
         self.rb_forces[env_ids, :, :] = 0.0
@@ -536,7 +654,15 @@ class LeapHandRot(VecTaskRot):
             self.init_pose_buf[s_ids, :] = pos.clone()
             self.object_init_pose_buf[s_ids, :] = sampled_pose[:, 16:].clone() 
 
-        object_indices = torch.unique(self.object_indices[env_ids]).to(torch.int32)
+        if self.enbale_goal_based_reward:
+            if goal_env_ids is None:
+                goal_env_ids = self.reset_goal_buf.nonzero(as_tuple=False).squeeze(-1)
+            object_indices = torch.unique(torch.cat([self.object_indices[env_ids],
+                                                 self.goal_object_indices[env_ids],
+                                                 self.goal_object_indices[goal_env_ids]]).to(torch.int32))
+        else:
+            object_indices = torch.unique(self.object_indices[env_ids]).to(torch.int32)
+        
         self.gym.set_actor_root_state_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.root_state_tensor), gymtorch.unwrap_tensor(object_indices), len(object_indices))
         hand_indices = self.hand_indices[env_ids].to(torch.int32)
         self.gym.set_dof_position_target_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.prev_targets), gymtorch.unwrap_tensor(hand_indices), len(env_ids))
@@ -582,6 +708,43 @@ class LeapHandRot(VecTaskRot):
                 tensor = tensor + (2 * torch.rand(tensor) - 1) * self.joint_noise_outlier_scale * outlier_mask
 
         return tensor
+    
+    def compute_full_observations(self, no_vel=False):
+        scaled_dof_pos = unscale(
+            self.leap_hand_dof_pos,
+            self.leap_hand_dof_lower_limits,
+            self.leap_hand_dof_upper_limits
+        )
+        quat_dist = quat_mul(self.object_rot, quat_conjugate(self.goal_rot))
+
+        if no_vel:
+            out = torch.cat(
+                [
+                    scaled_dof_pos,
+                    self.object_pose,
+                    self.goal_rot,
+                    quat_dist,
+                    self.fingertip_pos.reshape(self.num_envs, 3 * self.num_fingertips),
+                    self.actions
+                ],
+                dim=-1
+            )
+        else:
+            out = torch.cat(
+                [
+                    scaled_dof_pos,
+                    self.vel_obs_scale * self.leap_hand_dof_vel,
+                    self.object_pose,
+                    self.object_linvel,
+                    self.vel_obs_scale * self.object_angvel,
+                    self.goal_rot,
+                    quat_dist,
+                    self.fingertip_state.reshape(self.num_envs, 13 * self.num_fingertips),
+                    self.actions
+                ],
+                dim=-1
+            )
+        return out
 
     def compute_observations(self):
         self._refresh_gym()
@@ -623,61 +786,64 @@ class LeapHandRot(VecTaskRot):
                 np.save(target_file, self.target_list) 
                 exit()
 
-        cur_tar_buf = self.cur_targets[:, None]
-        
-        if self.cfg["env"]["include_targets"]:
-            cur_obs_buf = torch.cat([cur_obs_buf, cur_tar_buf], dim=-1)
-
-        if self.cfg["env"]["include_obj_pose"]:
-            cur_obs_buf = torch.cat([
-                cur_obs_buf, 
-                self.object_pos.unsqueeze(1), 
-                self.object_rpy.unsqueeze(1)
-            ], dim=-1)
-
-        if self.cfg["env"]["include_obj_scales"]:
-            cur_obs_buf = torch.cat([
-                cur_obs_buf, 
-                self.obj_scales.unsqueeze(1).unsqueeze(1), 
-            ], dim=-1)
-        
-        if self.cfg["env"]["include_pd_gains"]:
-            cur_obs_buf = torch.cat([
-                cur_obs_buf, 
-                self.p_gain.unsqueeze(1), 
-                self.d_gain.unsqueeze(1)
-            ], dim=-1)
-        
-        if self.cfg["env"]["include_friction_coefficient"]:
-            cur_obs_buf = torch.cat([
-                cur_obs_buf,
-                self.object_friction_buf.unsqueeze(1).unsqueeze(1)
-            ], dim=-1)
-
-        if "phase_period" in self.cfg["env"]:
-            cur_obs_buf = torch.cat([cur_obs_buf, self.phase[:, None]], dim=-1)
-
-        if self.cfg["env"]["include_history"]:
-            at_reset_env_ids = self.at_reset_buf.nonzero(as_tuple=False).squeeze(-1)
-            self.obs_buf_lag_history[:] = torch.cat([prev_obs_buf, cur_obs_buf], dim=1)
-
-            # refill the initialized buffers
-            self.obs_buf_lag_history[at_reset_env_ids, :, 0:16] = unscale(
-                self.leap_hand_dof_pos[at_reset_env_ids], self.leap_hand_dof_lower_limits[at_reset_env_ids],
-                self.leap_hand_dof_upper_limits[at_reset_env_ids]
-            ).clone().unsqueeze(1)
-
-            if self.cfg["env"]["include_targets"]:
-                self.obs_buf_lag_history[at_reset_env_ids, :, 16:32] = self.leap_hand_dof_pos[at_reset_env_ids].unsqueeze(1)
+        if self.obs_type == "proprioception":
+            cur_tar_buf = self.cur_targets[:, None]
             
-            t_buf = (self.obs_buf_lag_history[:, -3:].reshape(self.num_envs, -1)).clone() # attach three timesteps of history
+            if self.cfg["env"]["include_targets"]:
+                cur_obs_buf = torch.cat([cur_obs_buf, cur_tar_buf], dim=-1)
 
-            self.obs_buf[:, :t_buf.shape[1]] = t_buf
+            if self.cfg["env"]["include_obj_pose"]:
+                cur_obs_buf = torch.cat([
+                    cur_obs_buf, 
+                    self.object_pos.unsqueeze(1), 
+                    self.object_rpy.unsqueeze(1)
+                ], dim=-1)
 
-            # self.proprio_hist_buf[:] = self.obs_buf_lag_history[:, -self.prop_hist_len:].clone()
-            self.at_reset_buf[at_reset_env_ids] = 0
-        else:
-            self.obs_buf = cur_obs_buf.clone().squeeze(1)
+            if self.cfg["env"]["include_obj_scales"]:
+                cur_obs_buf = torch.cat([
+                    cur_obs_buf, 
+                    self.obj_scales.unsqueeze(1).unsqueeze(1), 
+                ], dim=-1)
+            
+            if self.cfg["env"]["include_pd_gains"]:
+                cur_obs_buf = torch.cat([
+                    cur_obs_buf, 
+                    self.p_gain.unsqueeze(1), 
+                    self.d_gain.unsqueeze(1)
+                ], dim=-1)
+            
+            if self.cfg["env"]["include_friction_coefficient"]:
+                cur_obs_buf = torch.cat([
+                    cur_obs_buf,
+                    self.object_friction_buf.unsqueeze(1).unsqueeze(1)
+                ], dim=-1)
+
+            if "phase_period" in self.cfg["env"]:
+                cur_obs_buf = torch.cat([cur_obs_buf, self.phase[:, None]], dim=-1)
+
+            if self.cfg["env"]["include_history"]:
+                at_reset_env_ids = self.at_reset_buf.nonzero(as_tuple=False).squeeze(-1)
+                self.obs_buf_lag_history[:] = torch.cat([prev_obs_buf, cur_obs_buf], dim=1)
+
+                # refill the initialized buffers
+                self.obs_buf_lag_history[at_reset_env_ids, :, 0:16] = unscale(
+                    self.leap_hand_dof_pos[at_reset_env_ids], self.leap_hand_dof_lower_limits[at_reset_env_ids],
+                    self.leap_hand_dof_upper_limits[at_reset_env_ids]
+                ).clone().unsqueeze(1)
+
+                if self.cfg["env"]["include_targets"]:
+                    self.obs_buf_lag_history[at_reset_env_ids, :, 16:32] = self.leap_hand_dof_pos[at_reset_env_ids].unsqueeze(1)
+                
+                t_buf = (self.obs_buf_lag_history[:, -3:].reshape(self.num_envs, -1)).clone() # attach three timesteps of history
+
+                self.obs_buf[:, :t_buf.shape[1]] = t_buf
+
+                # self.proprio_hist_buf[:] = self.obs_buf_lag_history[:, -self.prop_hist_len:].clone()
+                self.at_reset_buf[at_reset_env_ids] = 0
+            else:
+                self.obs_buf = cur_obs_buf.clone().squeeze(1)
+        elif self.obs_type == "full_state":
+            self.obs_buf = self.compute_full_observations().clone().squeeze(1)
 
         if self.cfg["env"]["obs_mask"] is not None:
             self.obs_buf = self.obs_buf * torch.tensor(self.cfg["env"]["obs_mask"], device=self.device)[None, :]
@@ -695,6 +861,7 @@ class LeapHandRot(VecTaskRot):
         torque_pscale = self.torque_penalty_scale
         work_pscale = self.work_penalty_scale
 
+        # general rewards
         self.rew_buf[:], log_r_reward, olv_penalty = compute_hand_reward(
             self.object_linvel, obj_linv_pscale,
             self.object_angvel, self.rot_axis_buf, self.rotate_reward_scale,
@@ -704,6 +871,22 @@ class LeapHandRot(VecTaskRot):
             work_penalty, work_pscale,
             use_reward_conf=self.enbale_default_rotation_axis
         )
+
+        # goal-based rewards
+        if self.enbale_goal_based_reward:
+            goal_rewards_buf, self.reset_goal_buf = compute_goal_based_hand_reward(
+                self.reset_buf, self.reset_goal_buf, self.object_rot, self.goal_rot,
+                self.actions,
+                self.goal_based_reward_cfg['rotRewardScale'], self.goal_based_reward_cfg['rotEps'],
+                self.goal_based_reward_cfg['reachGoalBonus'],
+                self.object_linvel, self.object_angvel, self.leap_hand_dof_vel,
+                self.success_tolerance,
+                self.goal_based_reward_cfg['dof_vel_thresh'],
+                self.goal_based_reward_cfg['obj_lin_vel_thresh'], self.goal_based_reward_cfg['obj_ang_vel_thresh'],
+                self.goal_based_reward_cfg['action_norm_thresh']
+            )
+            self.rew_buf += goal_rewards_buf
+            self.extras['success'] = self.reset_goal_buf.detach().to(self.rl_device).flatten()
 
         if "additional_rewards" in self.cfg["env"]:
             for reward_name, reward_scale in self.cfg["env"]["additional_rewards"].items():
@@ -753,9 +936,24 @@ class LeapHandRot(VecTaskRot):
         self.early_termination_buf[:] = 0
         self._refresh_gym()
         self.compute_reward(self.actions)
+        
+        # reset and reset goals
         env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
-        if len(env_ids) > 0:
-            self.reset_idx(env_ids)
+        
+        if self.enbale_goal_based_reward:
+            goal_env_ids = self.reset_goal_buf.nonzero(as_tuple=False).squeeze(-1)
+
+            if len(goal_env_ids) > 0 and len(env_ids) == 0:
+                self.reset_target_pose(goal_env_ids, apply_reset=True)
+            elif len(goal_env_ids) > 0:
+                self.reset_target_pose(goal_env_ids)
+
+            if len(env_ids) > 0:
+                self.reset_idx(env_ids, goal_env_ids)
+        else:
+            if len(env_ids) > 0:
+                self.reset_idx(env_ids)
+        
         self.compute_observations()
 
         if self.viewer and self.debug_viz:
@@ -892,6 +1090,16 @@ class LeapHandRot(VecTaskRot):
         self.object_linvel = self.root_state_tensor[self.object_indices, 7:10]
         self.object_angvel = self.root_state_tensor[self.object_indices, 10:13]
 
+        # update fingertip information
+        self.fingertip_state = self.rigid_body_states[:, self.fingertip_handles][:, :, 0:13]
+        self.fingertip_pos = self.rigid_body_states[:, self.fingertip_handles][:, :, 0:3]
+        self.fingertip_vel = self.rigid_body_states[:, self.fingertip_handles][:, :, 7:13]
+
+        # update goal information
+        self.goal_pose = self.goal_states[:, 0:7]
+        self.goal_pos = self.goal_states[:, 0:3]
+        self.goal_rot = self.goal_states[:, 3:7]
+
         if self.prev_global_counter != self.global_counter: # This is required since sometimes _refresh_gym is called multiple times within same step
             # TODO(yongpeng): make sure the anular velocity computation here avoids singularity problem
             new_object_roll, new_object_pitch, new_object_yaw = euler_from_quaternion(self.object_rot)
@@ -1026,8 +1234,12 @@ class LeapHandRot(VecTaskRot):
 
             self.gym.set_asset_rigid_shape_properties(self.hand_asset, rsp)
 
+        self._get_leap_asset()
+
         # load object asset
         self.object_asset_list = []
+        self.goal_asset_list = []
+
         for object_type in self.object_type_list:
             object_asset_file = self.asset_files_dict[object_type]
             object_asset_options = gymapi.AssetOptions()
@@ -1037,6 +1249,11 @@ class LeapHandRot(VecTaskRot):
 
             object_asset = self.gym.load_asset(self.sim, asset_root, object_asset_file, object_asset_options)
             self.object_asset_list.append(object_asset)
+
+            goal_asset = self.gym.load_asset(self.sim, asset_root, object_asset_file, object_asset_options)
+            self.goal_asset_list.append(goal_asset)
+
+        print("Finished loading object assets!")
 
     def _init_object_pose(self):
         leap_hand_start_pose = gymapi.Transform()
@@ -1093,6 +1310,13 @@ class LeapHandRot(VecTaskRot):
     def reward_orientation_error(self):
         error_rad_abs = quat_diff_rad(self.object_rot, self.target_quat).abs()
         return 1 / (error_rad_abs + self.reward_orient_error_epsilon)
+    
+    def reward_fingertip_distance(self):
+        ftip_diff = (self.fingertip_pos.view(self.num_envs, -1, 3) - self.object_pos[:, None, :])
+        ftip_dist = torch.linalg.norm(ftip_diff, dim=-1).view(self.num_envs, -1)
+        reward = ftip_dist.mean(dim=-1)
+
+        return reward
 
     def LEAPsim_limits(self):
         sim_min = self.sim_to_real(self.leap_hand_dof_lower_limits).squeeze().cpu().numpy()
@@ -1138,6 +1362,49 @@ def compute_hand_reward(
     reward = reward + torque_penalty * torque_pscale
     reward = reward + work_penalty * work_pscale
     return reward, rotate_reward, object_linvel_penalty
+
+def compute_goal_based_hand_reward(
+    reset_buf, reset_goal_buf,
+    object_rot, target_rot,
+    actions,
+    rot_reward_scale: float, rot_eps: float,
+    reach_goal_bonus: float,
+    object_linvel, object_angvel, dof_vel,
+    success_tolerance: float,
+    dof_vel_thresh: float,
+    obj_lin_vel_thresh: float, obj_ang_vel_thresh: float, action_norm_thresh: float,
+):
+    """
+        This function computes rewards based on goals
+    """
+    reward_terms = dict()
+
+    # rotation error
+    quat_diff = quat_mul(object_rot, quat_conjugate(target_rot))
+    rot_dist = 2.0 * torch.asin(torch.clamp(torch.norm(quat_diff[:, 0:3], p=2, dim=-1), max=1.0))
+    abs_rot_dist = torch.abs(rot_dist)
+
+    # sparse rotation reward
+    rot_rew = 1.0 / (abs_rot_dist + rot_eps) * rot_reward_scale
+    reward_terms['rot_reward'] = rot_rew
+
+    # useful norms
+    object_linvel_norm = torch.linalg.norm(object_linvel, dim=-1)
+    object_angvel_norm = torch.linalg.norm(object_angvel, dim=-1)
+    action_norm = torch.linalg.norm(actions, dim=-1)
+    dof_vel_norm = torch.linalg.norm(dof_vel, dim=-1)
+
+    # check goal reach
+    goal_reach = (abs_rot_dist <= success_tolerance) & (dof_vel_norm <= dof_vel_thresh) \
+                 & (object_linvel_norm <= obj_lin_vel_thresh) & (object_angvel_norm <= obj_ang_vel_thresh)
+    goal_reach = goal_reach & (action_norm <= action_norm_thresh)
+    goal_resets = torch.where(goal_reach, torch.ones_like(reset_goal_buf), reset_goal_buf)
+
+    # combine sparse and dense rewards
+    reward = torch.sum(torch.stack(list(reward_terms.values())), dim=0)
+    reward = torch.where(goal_reach, reward + reach_goal_bonus, reward)
+
+    return reward, goal_resets
 
 def euler_from_quaternion(quat_angle):
     """

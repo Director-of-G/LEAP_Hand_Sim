@@ -115,6 +115,7 @@
                 rpy="3.141592653589793116 1.1993117970061734707e-33 4.4395481053923607589e-32" />
             <geometry>
                 <mesh filename="fingertip.stl" />
+                <!-- <mesh filename="round_finger_tip.stl" /> -->
             </geometry>
             <material name="fingertip_material">
                 <color
@@ -126,6 +127,7 @@
                 rpy="3.141592653589793116 1.1993117970061734707e-33 4.4395481053923607589e-32" />
             <geometry>
                 <mesh filename="fingertip.stl" />
+                <!-- <mesh filename="round_finger_tip.stl" /> -->
             </geometry>
         </collision>
         <inertial>
@@ -265,6 +267,7 @@
                 rpy="3.141592653589793116 -4.3179597882835943107e-33 1.4408183216511868558e-31" />
             <geometry>
                 <mesh filename="fingertip.stl" />
+                <!-- <mesh filename="round_finger_tip.stl" /> -->
             </geometry>
             <material name="fingertip_material">
                 <color
@@ -276,6 +279,7 @@
                 rpy="3.141592653589793116 -4.3179597882835943107e-33 1.4408183216511868558e-31" />
             <geometry>
                 <mesh filename="fingertip.stl" />
+                <!-- <mesh filename="round_finger_tip.stl" /> -->
             </geometry>
         </collision>
         <inertial>
@@ -415,6 +419,7 @@
                 rpy="3.141592653589793116 8.6170716950575402125e-33 1.5565411607615035382e-32" />
             <geometry>
                 <mesh filename="fingertip.stl" />
+                <!-- <mesh filename="round_finger_tip.stl" /> -->
             </geometry>
             <material name="fingertip_material">
                 <color
@@ -426,6 +431,7 @@
                 rpy="3.141592653589793116 8.6170716950575402125e-33 1.5565411607615035382e-32" />
             <geometry>
                 <mesh filename="fingertip.stl" />
+                <!-- <mesh filename="round_finger_tip.stl" /> -->
             </geometry>
         </collision>
         <inertial>
@@ -566,6 +572,7 @@
                 rpy="4.3790577010156367543e-47 -3.3306690738754701143e-16 1.2042408677791935383e-46" />
             <geometry>
                 <mesh filename="thumb_fingertip.stl" />
+                <!-- <mesh filename="round_finger_tip.stl" /> -->
             </geometry>
             <material name="thumb_fingertip_material">
                 <color
@@ -577,6 +584,7 @@
                 rpy="4.3790577010156367543e-47 -3.3306690738754701143e-16 1.2042408677791935383e-46" />
             <geometry>
                 <mesh filename="thumb_fingertip.stl" />
+                <!-- <mesh filename="round_finger_tip.stl" /> -->
             </geometry>
         </collision>
         <inertial>
